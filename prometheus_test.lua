@@ -744,10 +744,7 @@ TestKeyIndex = {}
 function TestKeyIndex:setUp()
   self.dict = setmetatable({}, SimpleDict)
   ngx.shared.metrics = self.dict
-  self.key_index = require('prometheus_keys').new(self.dict, {
-    prefix = "_prefix_",
-    remove_expired_keys_interval = 1
-  })
+  self.key_index = require('prometheus_keys').new(self.dict, "_prefix_", 1)
 end
 function TestKeyIndex.tearDown()
   ngx.logs = nil
@@ -924,6 +921,7 @@ function TestPrometheus:testKeyTimeout()
 
   self.gauge_exp_2:set(1)
   self.p.key_index:sync()
+  self.p.key_index:remove_expired_keys()
   luaunit.assertEquals(self.dict:get("gauge_exp_2"), 1)
   i = self.p.key_index.index["gauge_exp_2"]
   luaunit.assertEquals(self.dict:get("__ngx_prom__key_" .. i), "gauge_exp_2")
@@ -931,6 +929,7 @@ function TestPrometheus:testKeyTimeout()
 
   sleep(1)
   self.p.key_index:sync()
+  self.p.key_index:remove_expired_keys()
   luaunit.assertEquals(self.dict:get("gauge_exp_2"), nil)
   luaunit.assertEquals(self.dict:get("__ngx_prom__key_" .. i), nil)
   luaunit.assertEquals(self.p.key_index.index["gauge_exp_2"], nil)
@@ -958,21 +957,14 @@ end
 
 function TestPrometheus:testKeyTimeout2()
   self.counter_exp_2:inc(1)
-  sleep(2)
   self.p._counter:sync()
+  sleep(2)
+  self.p.key_index:sync()
+  self.p.key_index:remove_expired_keys()
   self.counter_exp_2:inc(1)
   self.p._counter:sync()
-  luaunit.assertEquals(self.dict:get("metric_exp2"), 1)
   local i = self.p.key_index.index["metric_exp2"]
-  luaunit.assertEquals(self.dict:get("__ngx_prom__key_" .. i), "metric_exp2")
   luaunit.assertEquals(self.p.key_index.keys[i], "metric_exp2")
-
-  sleep(1)
-  self.p.key_index:sync()
-  luaunit.assertEquals(self.dict:get("metric_exp2"), nil)
-  luaunit.assertEquals(self.dict:get("__ngx_prom__key_" .. i), nil)
-  luaunit.assertEquals(self.p.key_index.index["metric_exp2"], nil)
-  luaunit.assertEquals(self.p.key_index.keys[i], nil)
 
 end
 

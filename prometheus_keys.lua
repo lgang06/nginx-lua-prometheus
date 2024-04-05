@@ -7,6 +7,13 @@
 local KeyIndex = {}
 KeyIndex.__index = KeyIndex
 
+
+-- check and remove expired keys
+local function remove_expired_keys(_, self)
+  self:remove_expired_keys()
+end
+
+
 function KeyIndex.new(shared_dict, prefix, remove_expired_keys_interval)
   local self = setmetatable({}, KeyIndex)
   self.dict = shared_dict
@@ -22,6 +29,24 @@ function KeyIndex.new(shared_dict, prefix, remove_expired_keys_interval)
 
   ngx.timer.every(remove_expired_keys_interval or 600, remove_expired_keys, self)
   return self
+end
+
+-- check and remove expired keys
+function KeyIndex:remove_expired_keys()
+  for i, _ in pairs(self.expire_keys) do
+    -- Read i-th key. If it is nil or ttl is < 0, it means it was expired
+    local ttl, err = self.dict:ttl(self.key_prefix .. i)
+    if ttl and ttl >=0 or err and err ~= "not found" then
+      goto CONTINUE
+    else
+      if self.keys[i] then
+        self.index[self.keys[i]] = nil
+        self.keys[i] = nil
+      end
+      self.expire_keys[i] = nil
+    end
+    ::CONTINUE::
+  end
 end
 
 -- Loads new keys that might have been added by other workers since last sync.
@@ -61,24 +86,6 @@ function KeyIndex:sync_range(first, last)
     end
   end
   self.last = last
-end
-
--- check and remove expired keys
-function remove_expired_keys(_, self)
-  for i, _ in pairs(self.expire_keys) do
-    -- Read i-th key. If it is nil or ttl is < 0, it means it was expired
-    local ttl, err = self.dict:ttl(self.key_prefix .. i)
-    if ttl and ttl >=0 or err and err ~= "not found" then
-      goto CONTINUE
-    else
-      if self.keys[i] then
-        self.index[self.keys[i]] = nil
-        self.keys[i] = nil
-      end
-      self.expire_keys[i] = nil
-    end
-    ::CONTINUE::
-  end
 end
 
 -- Returns array of all keys.
