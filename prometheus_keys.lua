@@ -7,7 +7,7 @@
 local KeyIndex = {}
 KeyIndex.__index = KeyIndex
 
-function KeyIndex.new(shared_dict, prefix)
+function KeyIndex.new(shared_dict, prefix, remove_expired_keys_interval)
   local self = setmetatable({}, KeyIndex)
   self.dict = shared_dict
   self.key_prefix = prefix .. "key_"
@@ -18,6 +18,9 @@ function KeyIndex.new(shared_dict, prefix)
   self.not_expired_index = 1
   self.keys = {}
   self.index = {}
+  self.expire_keys = {}
+
+  ngx.timer.every(remove_expired_keys_interval or 600, remove_expired_keys, self)
   return self
 end
 
@@ -33,7 +36,6 @@ function KeyIndex:sync()
     -- Sync only new keys, if there are any.
     self:sync_range(self.last, N)
   end
-  self:sync_expired(N)
   return N
 end
 
@@ -45,6 +47,14 @@ function KeyIndex:sync_range(first, last)
     if key then
       self.keys[i] = key
       self.index[key] = i
+
+      -- if it is nil and ttl not is 0, set expire_keys map
+      if not self.expire_keys[i] then
+        local ttl, _ = self.dict:ttl(self.key_prefix .. i)
+        if ttl and ttl ~= 0 then
+          self.expire_keys[i] = true
+        end
+      end
     elseif self.keys[i] then
       self.index[self.keys[i]] = nil
       self.keys[i] = nil
@@ -53,28 +63,19 @@ function KeyIndex:sync_range(first, last)
   self.last = last
 end
 
-function KeyIndex:sync_expired(N)
-  local first = self.not_expired_index
-  --- the key is sorted by created time, so the key will expire in order
-  for i = first, N do
-    self.not_expired_index = i
-    -- Read i-th key. If it is nil, it means it was expired
+-- check and remove expired keys
+function remove_expired_keys(_, self)
+  for i, _ in pairs(self.expire_keys) do
+    -- Read i-th key. If it is nil or ttl is < 0, it means it was expired
     local ttl, err = self.dict:ttl(self.key_prefix .. i)
-    if ttl then
-      if ttl == 0 then
-        goto CONTINUE
-      else
-        break
-      end
+    if ttl and ttl >=0 or err and err ~= "not found" then
+      goto CONTINUE
     else
-      if err ~= "not found" then
-        break
-      end
       if self.keys[i] then
-        -- we don't need to update self.delete_count and self.key_count
         self.index[self.keys[i]] = nil
         self.keys[i] = nil
       end
+      self.expire_keys[i] = nil
     end
     ::CONTINUE::
   end
@@ -95,10 +96,10 @@ end
 -- Atomically adds one or more keys to the index.
 --
 -- Args:
---   key_or_keys: Single string or a list of strings containing keys to add.
+-- key_or_keys: Single string or a list of strings containing keys to add.
 --
 -- Returns:
---   nil on success, string with error message otherwise
+-- nil on success, string with error message otherwise
 function KeyIndex:add(key_or_keys, err_msg_lru_eviction, exptime)
   local keys = key_or_keys
   if type(key_or_keys) == "string" then
@@ -109,7 +110,10 @@ function KeyIndex:add(key_or_keys, err_msg_lru_eviction, exptime)
     while true do
       local N = self:sync()
       if self.index[key] ~= nil then
-        -- key already exists, we can skip it
+        -- key already exists, if has exptime, set expire
+        if exptime then
+          self.dict:expire(self.key_prefix .. self.index[key], exptime)
+        end
         break
       end
       N = N+1
@@ -118,9 +122,12 @@ function KeyIndex:add(key_or_keys, err_msg_lru_eviction, exptime)
         local _, _, forcible2 = self.dict:incr(self.key_count, 1, 0)
         self.keys[N] = key
         self.index[key] = N
+        if exptime and exptime > 0 then
+          self.expire_keys[N] = true
+        end
         if forcible or forcible2 then
           return (err_msg_lru_eviction .. "; key index: add key: idx=" ..
-            self.key_prefix .. N .. ", key=" .. key)
+                  self.key_prefix .. N .. ", key=" .. key)
         end
         break
       elseif err ~= "exists" then
@@ -133,12 +140,13 @@ end
 -- Removes a key based on its value.
 --
 -- Args:
---   key: String value of the key, must exists in this index.
+-- key: String value of the key, must exists in this index.
 function KeyIndex:remove(key, err_msg_lru_eviction)
   local i = self.index[key]
   if i then
     self.index[key] = nil
     self.keys[i] = nil
+    self.expire_keys[i] = nil
     self.dict:set(self.key_prefix .. i, nil)
     self.deleted = self.deleted + 1
 
