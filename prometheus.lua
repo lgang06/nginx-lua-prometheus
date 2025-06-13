@@ -559,6 +559,9 @@ local function del(self, label_values)
   if err then
     self._log_error("Error deleting key: ".. k .. ": " .. err)
   end
+
+  -- Clean up the full metric name lookup table as well.
+  self.lookup = {}
 end
 
 -- Set the value of a gauge metric.
